@@ -94,6 +94,16 @@ class Settings {
      */
     var maxSlUnits: Double = 3.0          // §18-31: N = ۳ (تصمیم مالک — نسخهٔ ۷ هم همان ۳)
 
+    /**
+     * **حداقل** فاصلهٔ حد ضرر از سطح سفارش (واحد قیمت). ۰ = خاموش (پیش‌فرض؛ رفتار گذشته).
+     *
+     * چرا لازم شد: فیلتر کارمزد §۵-۳ فقط وقتی فعال است که مود §۲۰ روشن باشد (در مود خاموش
+     * کمیسیون صفر است و `SlCostFilterTest` همین را قفل کرده). با کارمزد واقعی ۰٫۷ دلار،
+     * معامله‌ای که R کوچک دارد در **هر** مودی بازنده است؛ این کلید، مستقل از مود مالی،
+     * ستاپ‌های کم‌فاصله را حذف می‌کند تا سفارش‌ها با هزینهٔ واقعی مثبت بمانند.
+     */
+    var minSlUnits: Double = 0.0
+
     // ── سند ۶ (تریگر ۲ معکوس) ─────────────────────────────────────────────────
     /** `true` ⇒ جهت معاملهٔ تریگر ۲ برعکسِ جهت ساختار است (سند ۶ / گزینهٔ ۳).
      *  زنجیرهٔ ساختار، نواحی، LV/HV و لحظهٔ مسلح‌شدن دقیقاً مثل سند ۵ می‌مانند؛ فقط
@@ -182,6 +192,7 @@ class Settings {
         it.slipTicks = slipTicks
         it.strategy = strategy; it.tpUnits = tpUnits
         it.maxSlUnits = maxSlUnits
+        it.minSlUnits = minSlUnits
         it.trigger2Fade = trigger2Fade; it.trigger2TargetR = trigger2TargetR; it.minSlCostMult = minSlCostMult
         it.useRiskPct = useRiskPct; it.riskPct = riskPct; it.equityPct = equityPct
         it.maxLeverage = maxLeverage; it.roundQty = roundQty
@@ -203,6 +214,8 @@ class Counters {
     var slCostBlocked = 0
     /** چند سفارش با سقف N رد شد (SL>N، §۱۸-۳۱). */
     var slNBlocked = 0
+    /** چند سفارش با «حداقل فاصلهٔ حد ضرر» رد شد (SL<minSlUnits). */
+    var slMinBlocked = 0
     /** چند مسلح‌شدن به‌خاطر پنجرهٔ زمانی (۰۱:۳۰–۲۰:۰۰ UTC) رد شد (§۱۸-۲۶). */
     var windowBlocked = 0
 }
@@ -498,10 +511,9 @@ class Engine(val cfg: Settings) {
     private fun processClosed(cd: Candle, i: Int, prev: Candle?) {
         curBi = i; curT = cd.t; curVol = cd.v
         times[i] = cd.t
-        // ⚠ سقف قبلی ۲۰۰٬۰۰۰ بود؛ بک‌تست یک‌سالهٔ M1 (۳۵۲ هزار کندل) وسط اجرا از این سقف
-        // می‌گذشت و `times` پاک می‌شد ⇒ مارکرهای کندل‌های قدیمی دیگر `t` نداشتند و زمانشان
-        // غلط ثبت می‌شد. حالا سقف ۱ میلیون است (≈۲٫۵ سال M1) و پاک‌سازی عملاً هرگز رخ نمی‌دهد.
-        if (times.size > 1_000_000) times.clear()
+        // سقف باید از بیشترین دیتاست داخلی (سه سال و حدود ۱٫۰۴ میلیون M1) بالاتر باشد؛
+        // پاک‌کردن HashMap وسط بک‌تست زمان مارکرهای قدیمی را از بین می‌برد.
+        if (times.size > 1_500_000) times.clear()
         val isNewS = Tf.isNewBarStart(tfS(), cd.t, prev?.t)
         val isNewM = Tf.isNewBarStart(tfM(), cd.t, prev?.t)
         val isNew1 = Tf.isNewBarStart(tf1(), cd.t, prev?.t)
@@ -2291,6 +2303,15 @@ class Engine(val cfg: Settings) {
             if (s.slBlockedHvBi != s.hvBi) {
                 s.slBlockedHvBi = s.hvBi
                 lg("ENGINE", "سفارش ستاپ #${s.id} ثبت نمی‌شود — فاصلهٔ حد ضرر (${f2(slDist)}) کمتر از ${f2(cfg.minSlCostMult)}×هزینه (${f2(cfg.minSlCostMult * costPerUnit)}) است (§۵-۳ سند ۷؛ هزینهٔ هر واحد ${f2(costPerUnit)})",
+                    "entry=${f2(eRef)} sl=${f2(s.sl)} bar=$curBi")
+            }
+            return
+        }
+        if (cfg.minSlUnits > 0.0 && slDist < cfg.minSlUnits) {
+            cnt.slMinBlocked++
+            if (s.slBlockedHvBi != s.hvBi) {
+                s.slBlockedHvBi = s.hvBi
+                lg("ENGINE", "سفارش ستاپ #${s.id} ثبت نمی‌شود — فاصلهٔ حد ضرر (${f2(slDist)}) کمتر از حداقل ${f2(cfg.minSlUnits)} است (SL<min)؛ با این کارمزد، معامله بازنده است",
                     "entry=${f2(eRef)} sl=${f2(s.sl)} bar=$curBi")
             }
             return
